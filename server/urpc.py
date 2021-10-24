@@ -57,13 +57,13 @@ class Promise():
 
     def then(self, resolve):
         self._resolve_callbacks.append(resolve)
-        if self.done():
+        if self.has_result:
             self._send_result()
         return self
     
     def catch(self, reject):
         self._reject_callbacks.append(reject)
-        if self.done():
+        if self.has_result:
             self._send_result()
         return self
     
