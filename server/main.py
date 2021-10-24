@@ -1,4 +1,4 @@
-from urpc import rpc, Promise
+from urpc import rpc, Promise, delay
 
 @rpc.rpc()
 def test_func(a, b):
@@ -8,6 +8,8 @@ def test_func(a, b):
 # so you have to pass it into the decorator
 @rpc.rpc("test_func2")
 async def test_func2():
+    await delay(5000) # non-blocking
+
     def t(resolve, reject):
         reject(RuntimeError("bad news"))
     await Promise(t)
