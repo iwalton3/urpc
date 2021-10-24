@@ -19,4 +19,7 @@ rpc.disconnect()
 # rpc.connect()
 ```
 
+You need https://pypi.org/project/pycrypto/ for the `client`.
+
 Uses umsgpack from: https://github.com/peterhinch/micropython-msgpack
+I have bundled umsgpack into one file and made some tweaks for easier use in this project.
