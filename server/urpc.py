@@ -34,7 +34,7 @@ async def read_blocks(conn, blocks):
     data = bytearray(length)
     return data, (await conn.readinto(data, length)) == length
 
-class NlFuture():
+class Promise():
     def __init__(self, wrapper):
         self._resolve_callbacks = []
         self._reject_callbacks = []
@@ -93,7 +93,7 @@ class NlFuture():
                     # resolve(self.result)
                     micropython.schedule(resolve, self.result)
 
-class CrFuture(NlFuture):
+class CoroPromise(Promise):
     def __init__(self, coro):
         def notify_coro(success, result, resolve, reject):
             try:
@@ -102,9 +102,9 @@ class CrFuture(NlFuture):
                 else:
                     f = coro.throw(result)
                 if hasattr(f, 'send'):
-                    f = CrFuture(f)
-                elif not isinstance(f, NlFuture):
-                    raise RuntimeError(f"{f} needs to be an NlFuture or coro")
+                    f = CoroPromise(f)
+                elif not isinstance(f, Promise):
+                    raise RuntimeError(f"{f} needs to be an Promise or coro")
 
                 def my_resolve(result=None):
                     notify_coro(True, result, resolve, reject)
@@ -123,7 +123,7 @@ class CrFuture(NlFuture):
         super().__init__(wrapper)
 
 def is_awaitable(obj):
-    return hasattr(obj, 'send') or isinstance(obj, NlFuture)
+    return hasattr(obj, 'send') or isinstance(obj, Promise)
 
 # msgpack tends to have tall stacks
 # so we use the scheduler to give it as much room as possible
@@ -132,7 +132,7 @@ def msgpack_loads_async(obj):
         resolve(msgpack.loads(obj))
     def handler(resolve, _reject):
         micropython.schedule(async_task, resolve)
-    return NlFuture(handler)
+    return Promise(handler)
 
 
 def msgpack_dump_async(obj, fp):
@@ -141,7 +141,7 @@ def msgpack_dump_async(obj, fp):
         resolve()
     def handler(resolve, _reject):
         micropython.schedule(async_task, resolve)
-    return NlFuture(handler)
+    return Promise(handler)
 
 class AsyncSocket:
     def __init__(self, sock):
@@ -178,7 +178,7 @@ class AsyncSocket:
             if self.current_task is not None:
                 raise RuntimeError("Cannot have multiple socket waits")
             self.current_task = resolve
-        return NlFuture(wrapper)
+        return Promise(wrapper)
 
     async def _readinto(self, buffer, length):
         if not self.ready:
@@ -339,7 +339,7 @@ class URPC:
                 sys.print_exception(ex)
 
         def handler(s):
-            return CrFuture(handler_async(s))
+            return CoroPromise(handler_async(s))
 
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         for _ in range(5):
