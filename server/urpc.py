@@ -12,6 +12,7 @@ import msgpack
 import gc
 import machine
 import config
+import micropython
 
 session_life = 600 # 10 minutes
 
@@ -28,10 +29,180 @@ class ByteAcc:
     def write(self, data):
         self.data.extend(data)
 
-def read_blocks(conn, blocks):
+async def read_blocks(conn, blocks):
     length = blocks*16
     data = bytearray(length)
-    return data, conn.readinto(data, length) == length
+    return data, (await conn.readinto(data, length)) == length
+
+class NlFuture():
+    def __init__(self, wrapper):
+        self._resolve_callbacks = []
+        self._reject_callbacks = []
+        self.exception = None
+        self.result = None
+        self.has_result = False
+        self.iter_sent = False
+
+        wrapper(self.set_result, self.set_exception)
+    
+    def __iter__(self):
+        return self
+    
+    def __next__(self):
+        if self.iter_sent:
+            raise StopIteration()
+        else:
+            self.iter_sent = True
+            return self
+
+    def then(self, resolve):
+        self._resolve_callbacks.append(resolve)
+        if self.done():
+            self._send_result()
+        return self
+    
+    def catch(self, reject):
+        self._reject_callbacks.append(reject)
+        if self.done():
+            self._send_result()
+        return self
+    
+    def set_result(self, result=None):
+        self.result = result
+        self.has_result = True
+        self._send_result()
+
+    def set_exception(self, exception=None):
+        self.exception = exception
+        self.has_result = True
+        self._send_result()
+
+    def _send_result(self):
+        if self.has_result:
+            if self.exception:
+                reject_callbacks = self._reject_callbacks
+                self._reject_callbacks = []
+                for reject in reject_callbacks:
+                    #reject(self.exception)
+                    # this prevents stack overflows
+                    micropython.schedule(reject, self.exception)
+            else:
+                resolve_callbacks = self._resolve_callbacks
+                self._resolve_callbacks = []
+                for resolve in resolve_callbacks:
+                    # resolve(self.result)
+                    micropython.schedule(resolve, self.result)
+
+class CrFuture(NlFuture):
+    def __init__(self, coro):
+        def notify_coro(success, result, resolve, reject):
+            try:
+                if success:
+                    f = coro.send(result)
+                else:
+                    f = coro.throw(result)
+                if hasattr(f, 'send'):
+                    f = CrFuture(f)
+                elif not isinstance(f, NlFuture):
+                    raise RuntimeError(f"{f} needs to be an NlFuture or coro")
+
+                def my_resolve(result=None):
+                    notify_coro(True, result, resolve, reject)
+                def my_throw(result=None):
+                    notify_coro(False, result, resolve, reject)
+
+                f.then(my_resolve).catch(my_throw)
+            except StopIteration as ex:
+                resolve(ex.value)
+            except Exception as ex:
+                reject(ex)
+
+        def wrapper(resolve, reject):
+            notify_coro(True, None, resolve, reject)
+
+        super().__init__(wrapper)
+
+def is_awaitable(obj):
+    return hasattr(obj, 'send') or isinstance(obj, NlFuture)
+
+# msgpack tends to have tall stacks
+# so we use the scheduler to give it as much room as possible
+def msgpack_loads_async(obj):
+    def async_task(resolve):
+        resolve(msgpack.loads(obj))
+    def handler(resolve, _reject):
+        micropython.schedule(async_task, resolve)
+    return NlFuture(handler)
+
+
+def msgpack_dump_async(obj, fp):
+    def async_task(resolve):
+        msgpack.dump(obj, fp)
+        resolve()
+    def handler(resolve, _reject):
+        micropython.schedule(async_task, resolve)
+    return NlFuture(handler)
+
+class AsyncSocket:
+    def __init__(self, sock):
+        self.sock = sock
+        self.current_task = None
+        self.ready = False
+        self.sock.setblocking(False)
+
+        def ready_callback(sock):
+            self.ready = True
+            if self.current_task:
+                task = self.current_task
+                self.current_task = None
+                task()
+        self.sock.setsockopt(socket.SOL_SOCKET, 20, ready_callback)
+
+    def send(self, data):
+        self.sock.setblocking(True)
+        self.sock.send(data)
+        self.sock.setblocking(False)
+    
+    def sendall(self, data):
+        self.sock.setblocking(True)
+        self.sock.sendall(data)
+        self.sock.setblocking(False)
+
+    def close(self):
+        self.sock.close()
+
+    def wait(self):
+        def wrapper(resolve, _reject):
+            if self.ready:
+                resolve()
+            if self.current_task is not None:
+                raise RuntimeError("Cannot have multiple socket waits")
+            self.current_task = resolve
+        return NlFuture(wrapper)
+
+    async def _readinto(self, buffer, length):
+        if not self.ready:
+            await self.wait()
+        read = self.sock.readinto(buffer, length)
+        if read == length or read == 0:
+            return read
+        if read is None:
+            read = 0
+        self.ready = False
+        read += await self.readinto(buffer[read:], length-read)
+        return read
+
+    def readinto(self, buffer, length):
+        if not isinstance(buffer, memoryview):
+            buffer = memoryview(buffer)
+        return self._readinto(buffer, length)
+
+    async def recv(self, length):
+        buffer = memoryview(bytearray(length))
+        read = await self._readinto(buffer, length)
+        if read < length:
+            buffer = buffer[:read]
+        return buffer
 
 class URPC:
     def rpc(self, name=None):
@@ -55,19 +226,17 @@ class URPC:
         self.http_request = None
         self.rpc_handlers = {}
         self.secret_key = secret_key
-        self.session_key = None
-        self.session_exp = None
-        self.r_session_key = None
 
-        def handler(s):
+        async def handler_async(s):
             try:
                 conn, _ = s.accept()
+                conn = AsyncSocket(conn)
                 try:
-                    request = conn.recv(3)
+                    request = await conn.recv(3)
 
                     if request == b'GET':
                         # Handle basic GET requests
-                        request = conn.recv(1024)
+                        request = bytes(await conn.recv(1024))
                         qs = request.split(b'\r\n')[0].split(b' ')[1].split(b'?')
                         args = {}
                         if len(qs) > 1:
@@ -76,7 +245,10 @@ class URPC:
                                 k, v = pair.split('=')
                                 args[k] = v
                         if self.http_request:
-                            response = json.dumps(self.http_request(args))
+                            result = self.http_request(args)
+                            if is_awaitable(result):
+                                result = await result
+                            response = json.dumps(result)
                         else:
                             response = b'OK'
                         conn.send('HTTP/1.1 200 OK\n')
@@ -84,46 +256,46 @@ class URPC:
                         conn.send('Connection: close\n\n')
                         conn.sendall(response)
                     elif request == b'RPC':
-                        self.session_key = os.urandom(16)
-                        self.session_exp = time.time() + session_life
+                        session_key = os.urandom(16)
+                        session_exp = time.time() + session_life
 
-                        conn.send(self.session_key)
-                        conn.send(hash(self.secret_key, self.session_key))
-                        self.r_session_key = conn.recv(16)
-                        if len(self.r_session_key) != 16:
+                        conn.send(session_key)
+                        conn.send(hash(self.secret_key, session_key))
+                        r_session_key = await conn.recv(16)
+                        if len(r_session_key) != 16:
                             return
-                        auth = conn.recv(16)
+                        auth = await conn.recv(16)
                         if len(auth) != 16:
                             return
-                        if auth != hash(self.secret_key, self.r_session_key):
+                        if auth != hash(self.secret_key, r_session_key):
                             return
                         
                         conn.send(b'OK')
 
                         while True:
-                            auth = conn.recv(16)
+                            auth = await conn.recv(16)
                             if len(auth) != 16:
                                 return
                             
-                            length = conn.recv(2)
+                            length = await conn.recv(2)
                             if len(length) != 2:
                                 return
-                            ciphertext, ok = read_blocks(conn, (length[0] << 8) + length[1])
+                            ciphertext, ok = await read_blocks(conn, (length[0] << 8) + length[1])
                             if not ok:
                                 return
-                            if time.time() < self.session_exp:
-                                self.session_exp = time.time() + session_life
+                            if time.time() < session_exp:
+                                session_exp = time.time() + session_life
                             else:
                                 return
                             
-                            if auth != hash(self.secret_key, self.session_key, ciphertext, length):
+                            if auth != hash(self.secret_key, session_key, ciphertext, length):
                                 return
 
-                            aes = cryptolib.aes(self.secret_key, 2, self.session_key)
+                            aes = cryptolib.aes(self.secret_key, 2, session_key)
                             aes.decrypt(ciphertext, ciphertext)
                             ciphertext = memoryview(ciphertext)[:-ciphertext[-1]]
-                            handler_name, args, kwargs = msgpack.loads(ciphertext)
-                            self.session_key = hash(self.secret_key, self.session_key)
+                            handler_name, args, kwargs = await msgpack_loads_async(ciphertext)
+                            session_key = hash(self.secret_key, session_key)
 
                             del ciphertext
                             gc.collect()
@@ -131,24 +303,26 @@ class URPC:
                             success = True
                             try:
                                 data = self.rpc_handlers[handler_name](*args, **kwargs)
+                                if is_awaitable(data):
+                                    data = await data
                             except Exception as ex:
                                 success = False
-                                data = (type(ex).__name__, str(ex))
+                                data = [type(ex).__name__, str(ex)]
 
                             data_acc = ByteAcc()
-                            msgpack.dump((success, data), data_acc)
+                            await msgpack_dump_async([success, data], data_acc)
                             data = data_acc.data
 
                             padding_amt = 16 - len(data) % 16
                             data.extend(bytes([padding_amt])*padding_amt)
 
-                            aes = cryptolib.aes(self.secret_key, 2, self.r_session_key)
+                            aes = cryptolib.aes(self.secret_key, 2, r_session_key)
                             aes.encrypt(data, data)
 
                             length = len(data)//16
                             length = bytes([length>>8, length&0xFF])
-                            auth = hash(self.secret_key, self.r_session_key, data, length)
-                            self.r_session_key = hash(self.secret_key, self.r_session_key)
+                            auth = hash(self.secret_key, r_session_key, data, length)
+                            r_session_key = hash(self.secret_key, r_session_key)
 
                             conn.send(auth)
                             conn.send(length)
@@ -161,11 +335,17 @@ class URPC:
                     conn.close()
             except Exception as ex:
                 print("Unexpected Error:", str(ex))
+                import sys
+                sys.print_exception(ex)
+
+        def handler(s):
+            return CrFuture(handler_async(s))
 
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         for _ in range(5):
             try:
                 s.bind(('', 80))
+                print("URPC bound to port 80")
                 break
             except OSError as e:
                 print("Socket error, will retry 5 times...", str(e))

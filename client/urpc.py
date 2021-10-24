@@ -132,7 +132,7 @@ class URPC:
         self.sock = None
     
     def call(self, name, *args, **kwargs):
-        success, result = self._request((name, args, kwargs))
+        success, result = self._request([name, list(args), kwargs])
         if success:
             return result
         else:
