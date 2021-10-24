@@ -189,6 +189,10 @@ class URPC:
         def _eval(code):
             return eval(code)
         
+        @self.rpc("exec")
+        def _exec(code):
+            return exec(code)
+        
         @self.rpc("ls")
         def ls():
             return os.listdir()
