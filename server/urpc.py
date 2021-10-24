@@ -177,49 +177,50 @@ class URPC:
         def _dir():
             return list(self.rpc_handlers.keys())
         
-        @self.rpc("reset")
-        def reset():
-            machine.reset()
-        
-        @self.rpc("soft_reset")
-        def soft_reset():
-            machine.soft_reset()
-        
-        @self.rpc("eval")
-        def _eval(code):
-            return eval(code)
-        
-        @self.rpc("exec")
-        def _exec(code):
-            return exec(code)
-        
-        @self.rpc("ls")
-        def ls():
-            return os.listdir()
-        
-        @self.rpc("rm")
-        def rm(filename):
-            return os.remove(filename)
-        
-        @self.rpc("put")
-        def put(filename, contents, mode='wb'):
-            with open(filename, mode) as fh:
-                fh.write(contents)
-        
-        @self.rpc("get")
-        def get(filename, mode='rb'):
-            with open(filename, mode) as fh:
-                return fh.read()
+        if config.ENABLE_MGMT_API:
+            @self.rpc("reset")
+            def reset():
+                machine.reset()
+            
+            @self.rpc("soft_reset")
+            def soft_reset():
+                machine.soft_reset()
+            
+            @self.rpc("eval")
+            def _eval(code):
+                return eval(code)
+            
+            @self.rpc("exec")
+            def _exec(code):
+                return exec(code)
+            
+            @self.rpc("ls")
+            def ls():
+                return os.listdir()
+            
+            @self.rpc("rm")
+            def rm(filename):
+                return os.remove(filename)
+            
+            @self.rpc("put")
+            def put(filename, contents, mode='wb'):
+                with open(filename, mode) as fh:
+                    fh.write(contents)
+            
+            @self.rpc("get")
+            def get(filename, mode='rb'):
+                with open(filename, mode) as fh:
+                    return fh.read()
 
-        @self.rpc("start_webrepl")
-        def start_webrepl(password, port=8266):
-            import webrepl
-            webrepl.start(port=port, password=password)
+            @self.rpc("start_webrepl")
+            def start_webrepl(password, port=8266):
+                import webrepl
+                webrepl.start(port=port, password=password)
 
 
-        @self.rpc("stop_webrepl")
-        def stop_webrepl():
-            import webrepl
-            webrepl.stop()
+            @self.rpc("stop_webrepl")
+            def stop_webrepl():
+                import webrepl
+                webrepl.stop()
 
 rpc = URPC(config.SECRET_KEY)
