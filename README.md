@@ -26,6 +26,7 @@ def test_func2(a, b):
 def http_handler(query_string_args):
     return ["some", {"json": True}, "values"]
 ```
+I also include some administrative functions, if you prefer not to use the REPL, which is unencrypted and limited to an 8 character password: `reset()`, `soft_reset()`, `eval(code)`, `ls()`, `rm(filename)`, `put(filename, b'data')`, `get(filename)`, `start_webrepl(password)`, `stop_webrepl()`. Note that these do not buffer the inputs/outputs.
 
 The `client` folder contains the client, which you use like this:
 
