@@ -216,96 +216,6 @@ _float_precision = "single" if len(str(1/3)) < 13 else "double"
 def _fail():  # Debug code should never be called.
     raise Exception('Logic error')
 
-def _pack_integer(obj, fp):
-    if obj < 0:
-        if obj >= -32:
-            fp.write(struct.pack("b", obj))
-        elif obj >= -2**(8 - 1):
-            fp.write(b"\xd0")
-            fp.write(struct.pack("b", obj))
-        elif obj >= -2**(16 - 1):
-            fp.write(b"\xd1")
-            fp.write(struct.pack(">h", obj))
-        elif obj >= -2**(32 - 1):
-            fp.write(b"\xd2")
-            fp.write(struct.pack(">i", obj))
-        elif obj >= -2**(64 - 1):
-            fp.write(b"\xd3")
-            fp.write(struct.pack(">q", obj))
-        else:
-            raise UnsupportedTypeException("huge signed int")
-    else:
-        if obj < 128:
-            fp.write(struct.pack("B", obj))
-        elif obj < 2**8:
-            fp.write(b"\xcc")
-            fp.write(struct.pack("B", obj))
-        elif obj < 2**16:
-            fp.write(b"\xcd")
-            fp.write(struct.pack(">H", obj))
-        elif obj < 2**32:
-            fp.write(b"\xce")
-            fp.write(struct.pack(">I", obj))
-        elif obj < 2**64:
-            fp.write(b"\xcf")
-            fp.write(struct.pack(">Q", obj))
-        else:
-            raise UnsupportedTypeException("huge unsigned int")
-
-
-def _pack_nil(obj, fp):
-    fp.write(b"\xc0")
-
-
-def _pack_boolean(obj, fp):
-    fp.write(b"\xc3" if obj else b"\xc2")
-
-
-def _pack_float(obj, fp, options):
-    fpr = options.get('force_float_precision', _float_precision)
-    if fpr == "double":
-        fp.write(b"\xcb")
-        fp.write(struct.pack(">d", obj))
-    elif fpr == "single":
-        fp.write(b"\xca")
-        fp.write(struct.pack(">f", obj))
-    else:
-        raise ValueError("invalid float precision")
-
-
-def _pack_string(obj, fp):
-    obj = bytes(obj, 'utf-8')  # Preferred MP encode method
-    obj_len = len(obj)
-    if obj_len < 32:
-        fp.write(struct.pack("B", 0xa0 | obj_len))
-    elif obj_len < 2**8:
-        fp.write(b"\xd9")
-        fp.write(struct.pack("B", obj_len))
-    elif obj_len < 2**16:
-        fp.write(b"\xda")
-        fp.write(struct.pack(">H", obj_len))
-    elif obj_len < 2**32:
-        fp.write(b"\xdb")
-        fp.write(struct.pack(">I", obj_len))
-    else:
-        raise UnsupportedTypeException("huge string")
-    fp.write(obj)
-
-def _pack_binary(obj, fp):
-    obj_len = len(obj)
-    if obj_len < 2**8:
-        fp.write(b"\xc4")
-        fp.write(struct.pack("B", obj_len))
-    elif obj_len < 2**16:
-        fp.write(b"\xc5")
-        fp.write(struct.pack(">H", obj_len))
-    elif obj_len < 2**32:
-        fp.write(b"\xc6")
-        fp.write(struct.pack(">I", obj_len))
-    else:
-        raise UnsupportedTypeException("huge binary string")
-    fp.write(obj)
-
 def _pack_ext(obj, fp, tb = b'\x00\xd4\xd5\x00\xd6\x00\x00\x00\xd7\x00\x00\x00\x00\x00\x00\x00\xd8'):
     od = obj.data
     obj_len = len(od)
@@ -327,38 +237,6 @@ def _pack_ext(obj, fp, tb = b'\x00\xd4\xd5\x00\xd6\x00\x00\x00\xd7\x00\x00\x00\x
         raise UnsupportedTypeException("huge ext data")
     fp.write(od)
 
-def _pack_array(obj, fp, options):
-    obj_len = len(obj)
-    if obj_len < 16:
-        fp.write(struct.pack("B", 0x90 | obj_len))
-    elif obj_len < 2**16:
-        fp.write(b"\xdc")
-        fp.write(struct.pack(">H", obj_len))
-    elif obj_len < 2**32:
-        fp.write(b"\xdd")
-        fp.write(struct.pack(">I", obj_len))
-    else:
-        raise UnsupportedTypeException("huge array")
-
-    for e in obj:
-        dump(e, fp, options)
-
-def _pack_map(obj, fp, options):
-    obj_len = len(obj)
-    if obj_len < 16:
-        fp.write(struct.pack("B", 0x80 | obj_len))
-    elif obj_len < 2**16:
-        fp.write(b"\xde")
-        fp.write(struct.pack(">H", obj_len))
-    elif obj_len < 2**32:
-        fp.write(b"\xdf")
-        fp.write(struct.pack(">I", obj_len))
-    else:
-        raise UnsupportedTypeException("huge array")
-
-    for k, v in obj.items():
-        dump(k, fp, options)
-        dump(v, fp, options)
 
 def _utype(obj):
     raise UnsupportedTypeException("unsupported type: {:s}".format(str(type(obj))))
@@ -370,7 +248,7 @@ def dump(obj, fp, options={}):
     ext_handlers = options.get("ext_handlers")
 
     if obj is None:
-        _pack_nil(obj, fp)
+        fp.write(b"\xc0")
     elif ext_handlers and obj.__class__ in ext_handlers:
         _pack_ext(ext_handlers[obj.__class__](obj), fp)
     elif obj.__class__ in ext_class_to_type:
@@ -379,19 +257,114 @@ def dump(obj, fp, options={}):
         except AttributeError:
             raise NotImplementedError("Ext class {:s} lacks packb()".format(repr(obj.__class__)))
     elif isinstance(obj, bool):
-        _pack_boolean(obj, fp)
+        fp.write(b"\xc3" if obj else b"\xc2")
     elif isinstance(obj, int):
-        _pack_integer(obj, fp)
+        if obj < 0:
+            if obj >= -32:
+                fp.write(struct.pack("b", obj))
+            elif obj >= -2**(8 - 1):
+                fp.write(b"\xd0")
+                fp.write(struct.pack("b", obj))
+            elif obj >= -2**(16 - 1):
+                fp.write(b"\xd1")
+                fp.write(struct.pack(">h", obj))
+            elif obj >= -2**(32 - 1):
+                fp.write(b"\xd2")
+                fp.write(struct.pack(">i", obj))
+            elif obj >= -2**(64 - 1):
+                fp.write(b"\xd3")
+                fp.write(struct.pack(">q", obj))
+            else:
+                raise UnsupportedTypeException("huge signed int")
+        else:
+            if obj < 128:
+                fp.write(struct.pack("B", obj))
+            elif obj < 2**8:
+                fp.write(b"\xcc")
+                fp.write(struct.pack("B", obj))
+            elif obj < 2**16:
+                fp.write(b"\xcd")
+                fp.write(struct.pack(">H", obj))
+            elif obj < 2**32:
+                fp.write(b"\xce")
+                fp.write(struct.pack(">I", obj))
+            elif obj < 2**64:
+                fp.write(b"\xcf")
+                fp.write(struct.pack(">Q", obj))
+            else:
+                raise UnsupportedTypeException("huge unsigned int")
     elif isinstance(obj, float):
-        _pack_float(obj, fp, options)
+        fpr = options.get('force_float_precision', _float_precision)
+        if fpr == "double":
+            fp.write(b"\xcb")
+            fp.write(struct.pack(">d", obj))
+        elif fpr == "single":
+            fp.write(b"\xca")
+            fp.write(struct.pack(">f", obj))
+        else:
+            raise ValueError("invalid float precision")
     elif isinstance(obj, str):
-        _pack_string(obj, fp)
+        obj = bytes(obj, 'utf-8')  # Preferred MP encode method
+        obj_len = len(obj)
+        if obj_len < 32:
+            fp.write(struct.pack("B", 0xa0 | obj_len))
+        elif obj_len < 2**8:
+            fp.write(b"\xd9")
+            fp.write(struct.pack("B", obj_len))
+        elif obj_len < 2**16:
+            fp.write(b"\xda")
+            fp.write(struct.pack(">H", obj_len))
+        elif obj_len < 2**32:
+            fp.write(b"\xdb")
+            fp.write(struct.pack(">I", obj_len))
+        else:
+            raise UnsupportedTypeException("huge string")
+        fp.write(obj)
     elif isinstance(obj, bytes):
-        _pack_binary(obj, fp)
+        obj_len = len(obj)
+        if obj_len < 2**8:
+            fp.write(b"\xc4")
+            fp.write(struct.pack("B", obj_len))
+        elif obj_len < 2**16:
+            fp.write(b"\xc5")
+            fp.write(struct.pack(">H", obj_len))
+        elif obj_len < 2**32:
+            fp.write(b"\xc6")
+            fp.write(struct.pack(">I", obj_len))
+        else:
+            raise UnsupportedTypeException("huge binary string")
+        fp.write(obj)
     elif isinstance(obj, (list, tuple)):
-        _pack_array(obj, fp, options)
+        obj_len = len(obj)
+        if obj_len < 16:
+            fp.write(struct.pack("B", 0x90 | obj_len))
+        elif obj_len < 2**16:
+            fp.write(b"\xdc")
+            fp.write(struct.pack(">H", obj_len))
+        elif obj_len < 2**32:
+            fp.write(b"\xdd")
+            fp.write(struct.pack(">I", obj_len))
+        else:
+            raise UnsupportedTypeException("huge array")
+
+        for e in obj:
+            dump(e, fp, options)
     elif isinstance(obj, dict):
-        _pack_map(obj, fp, options)
+        obj_len = len(obj)
+        if obj_len < 16:
+            fp.write(struct.pack("B", 0x80 | obj_len))
+        elif obj_len < 2**16:
+            fp.write(b"\xde")
+            fp.write(struct.pack(">H", obj_len))
+        elif obj_len < 2**32:
+            fp.write(b"\xdf")
+            fp.write(struct.pack(">I", obj_len))
+        else:
+            raise UnsupportedTypeException("huge array")
+
+        for k, v in obj.items():
+            dump(k, fp, options)
+            dump(v, fp, options)
     elif isinstance(obj, Ext):
         _pack_ext(obj, fp)
     elif ext_handlers:
@@ -439,67 +412,21 @@ def _read_except(fp, n):
     return data
 
 def _re0(s, fp, n):
-    return struct.unpack(s, _read_except(fp, n))[0]
+    if n == 0:
+        return b""
 
-def _unpack_integer(code, fp):
-    ic = ord(code)
-    if (ic & 0xe0) == 0xe0:
-        return struct.unpack("b", code)[0]
-    if (ic & 0x80) == 0x00:
-        return struct.unpack("B", code)[0]
-    ic -= 0xcc
-    off = ic << 1
-    try:
-        s = "B >H>I>Qb >h>i>q"[off : off + 2]
-    except IndexError:
-        _fail()
-    return _re0(s.strip(), fp, 1 << (ic & 3))
+    data = fp.read(n)
+    if len(data) == 0:
+        raise InsufficientDataException()
 
+    while len(data) < n:
+        chunk = fp.read(n - len(data))
+        if len(chunk) == 0:
+            raise InsufficientDataException()
 
-def _unpack_float(code, fp):
-    ic = ord(code)
-    if ic == 0xca:
-        return _re0(">f", fp, 4)
-    if ic == 0xcb:
-        return _re0(">d", fp, 8)
-    _fail()
+        data += chunk
 
-
-def _unpack_string(code, fp, options):
-    ic = ord(code)
-    if (ic & 0xe0) == 0xa0:
-        length = ic & ~0xe0
-    elif ic == 0xd9:
-        length = _re0("B", fp, 1)
-    elif ic == 0xda:
-        length = _re0(">H", fp, 2)
-    elif ic == 0xdb:
-        length = _re0(">I", fp, 4)
-    else:
-        _fail()
-
-    data = _read_except(fp, length)
-    try:
-        return str(data, 'utf-8')  # Preferred MP way to decode
-    except:  # MP does not have UnicodeDecodeError
-        if options.get("allow_invalid_utf8"):
-            return data  # MP Remove InvalidString class: subclass of built-in class
-        raise InvalidStringException("unpacked string is invalid utf-8")
-
-
-def _unpack_binary(code, fp):
-    ic = ord(code)
-    if ic == 0xc4:
-        length = _re0("B", fp, 1)
-    elif ic == 0xc5:
-        length = _re0(">H", fp, 2)
-    elif ic == 0xc6:
-        length = _re0(">I", fp, 4)
-    else:
-        _fail()
-
-    return _read_except(fp, length)
-
+    return struct.unpack(s, data)[0]
 
 def _unpack_ext(code, fp, options):
     ic = ord(code)
@@ -534,94 +461,129 @@ def _unpack_ext(code, fp, options):
 
     return ext
 
-def _unpack_array(code, fp, options):
-    ic = ord(code)
-    if (ic & 0xf0) == 0x90:
-        length = (ic & ~0xf0)
-    elif ic == 0xdc:
-        length = _re0(">H", fp, 2)
-    elif ic == 0xdd:
-        length = _re0(">I", fp, 4)
-    else:
-        _fail()
-    g = (load(fp, options) for i in range(length))  # generator
-    return tuple(g) if options.get('use_tuple') else list(g)
-
-
 def _deep_list_to_tuple(obj):
     if isinstance(obj, list):
         return tuple([_deep_list_to_tuple(e) for e in obj])
     return obj
 
-
-def _unpack_map(code, fp, options):
-    ic = ord(code)
-    if (ic & 0xf0) == 0x80:
-        length = (ic & ~0xf0)
-    elif ic == 0xde:
-        length = _re0(">H", fp, 2)
-    elif ic == 0xdf:
-        length = _re0(">I", fp, 4)
-    else:
-        _fail()
-
-    d = {} if not options.get('use_ordered_dict') \
-        else collections.OrderedDict()
-    for _ in range(length):
-        # Unpack key
-        k = load(fp, options)
-
-        if isinstance(k, list):
-            # Attempt to convert list into a hashable tuple
-            k = _deep_list_to_tuple(k)
-        try:
-            hash(k)
-        except:
-            raise UnhashableKeyException(
-                "unhashable key: \"{:s}\"".format(str(k)))
-        if k in d:
-            raise DuplicateKeyException(
-                "duplicate key: \"{:s}\" ({:s})".format(str(k), str(type(k))))
-
-        # Unpack value
-        v = load(fp, options)
-
-        try:
-            d[k] = v
-        except TypeError:
-            raise UnhashableKeyException(
-                "unhashable key: \"{:s}\"".format(str(k)))
-    return d
-
-
 def load(fp, options={}):
     code = _read_except(fp, 1)
     ic = ord(code)
     if (ic <= 0x7f) or (0xcc <= ic <= 0xd3) or (0xe0 <= ic <= 0xff):
-        return _unpack_integer(code, fp)
+        # unpack int
+        if (ic & 0xe0) == 0xe0:
+            return struct.unpack("b", code)[0]
+        if (ic & 0x80) == 0x00:
+            return struct.unpack("B", code)[0]
+        ic -= 0xcc
+        off = ic << 1
+        try:
+            s = "B >H>I>Qb >h>i>q"[off : off + 2]
+        except IndexError:
+            _fail()
+        return _re0(s.strip(), fp, 1 << (ic & 3))
     if ic <= 0xc9:
-        if ic <= 0xc3:
-            if ic <= 0x8f:
-                return _unpack_map(code, fp, options)
-            if ic <= 0x9f:
-                return _unpack_array(code, fp, options)
-            if ic <= 0xbf:
-                return _unpack_string(code, fp, options)
+        if ic <= 0xc3 or ic >= 0xdb:
+            if ic <= 0x8f or 0xdd < ic:
+                # unpack map
+                if (ic & 0xf0) == 0x80:
+                    length = (ic & ~0xf0)
+                elif ic == 0xde:
+                    length = _re0(">H", fp, 2)
+                elif ic == 0xdf:
+                    length = _re0(">I", fp, 4)
+                else:
+                    _fail()
+
+                d = {} if not options.get('use_ordered_dict') \
+                    else collections.OrderedDict()
+                for _ in range(length):
+                    # Unpack key
+                    k = load(fp, options)
+
+                    if isinstance(k, list):
+                        # Attempt to convert list into a hashable tuple
+                        k = _deep_list_to_tuple(k)
+                    try:
+                        hash(k)
+                    except:
+                        raise UnhashableKeyException(
+                            "unhashable key: \"{:s}\"".format(str(k)))
+                    if k in d:
+                        raise DuplicateKeyException(
+                            "duplicate key: \"{:s}\" ({:s})".format(str(k), str(type(k))))
+
+                    # Unpack value
+                    v = load(fp, options)
+
+                    try:
+                        d[k] = v
+                    except TypeError:
+                        raise UnhashableKeyException(
+                            "unhashable key: \"{:s}\"".format(str(k)))
+                return d
+            if ic <= 0x9f or 0xdb < ic <= 0xdd:
+                # unpack array
+                ic = ord(code)
+                if (ic & 0xf0) == 0x90:
+                    length = (ic & ~0xf0)
+                elif ic == 0xdc:
+                    length = _re0(">H", fp, 2)
+                elif ic == 0xdd:
+                    length = _re0(">I", fp, 4)
+                else:
+                    _fail()
+                items = []
+                for _ in range(length):
+                    items.append(load(fp, options))
+                return items
+            if ic <= 0xbf or 0xd8 < ic <= 0xdb:
+                # unpack string
+                ic = ord(code)
+                if (ic & 0xe0) == 0xa0:
+                    length = ic & ~0xe0
+                elif ic == 0xd9:
+                    length = _re0("B", fp, 1)
+                elif ic == 0xda:
+                    length = _re0(">H", fp, 2)
+                elif ic == 0xdb:
+                    length = _re0(">I", fp, 4)
+                else:
+                    _fail()
+
+                data = _read_except(fp, length)
+                try:
+                    return str(data, 'utf-8')  # Preferred MP way to decode
+                except:  # MP does not have UnicodeDecodeError
+                    if options.get("allow_invalid_utf8"):
+                        return data  # MP Remove InvalidString class: subclass of built-in class
+                    raise InvalidStringException("unpacked string is invalid utf-8")
             if ic == 0xc1:
                 raise ReservedCodeException("got reserved code: 0xc1")
             return (None, 0, False, True)[ic - 0xc0]
         if ic <= 0xc6:
-            return _unpack_binary(code, fp)
+            # unpack binary
+            if ic == 0xc4:
+                length = _re0("B", fp, 1)
+            elif ic == 0xc5:
+                length = _re0(">H", fp, 2)
+            elif ic == 0xc6:
+                length = _re0(">I", fp, 4)
+            else:
+                _fail()
+
+            return _read_except(fp, length)
         return _unpack_ext(code, fp, options)
     if ic <= 0xcb:
-        return _unpack_float(code, fp)
+        # unpack float
+        if ic == 0xca:
+            return _re0(">f", fp, 4)
+        if ic == 0xcb:
+            return _re0(">d", fp, 8)
+        _fail()
     if ic <= 0xd8:
         return _unpack_ext(code, fp, options)
-    if ic <= 0xdb:
-        return _unpack_string(code, fp, options)
-    if ic <= 0xdd:
-        return _unpack_array(code, fp, options)
-    return _unpack_map(code, fp, options)
+    _fail()
 
 # Interface to __init__.py
 
