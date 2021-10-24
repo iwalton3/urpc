@@ -343,14 +343,14 @@ class URPC:
             return CoroPromise(handler_async(s))
 
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        for _ in range(5):
+        for i in range(5):
             try:
                 s.bind(('', 80))
                 print("URPC bound to port 80")
                 break
             except OSError as e:
                 print("Socket error, will retry 5 times...", str(e))
-                time.sleep(1)
+                time.sleep(2**i)
         s.listen(5)
         s.setsockopt(socket.SOL_SOCKET, 20, handler)
 
