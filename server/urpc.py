@@ -48,12 +48,15 @@ class Promise():
     def __iter__(self):
         return self
     
-    def __next__(self):
+    def __next__(self, value=None):
         if self.iter_sent:
-            raise StopIteration()
+            raise StopIteration(value)
         else:
             self.iter_sent = True
             return self
+
+    def send(self, value):
+        self.__next__(value)
 
     def then(self, resolve):
         self._resolve_callbacks.append(resolve)
@@ -101,10 +104,11 @@ class CoroPromise(Promise):
                     f = coro.send(result)
                 else:
                     f = coro.throw(result)
-                if hasattr(f, 'send'):
-                    f = CoroPromise(f)
-                elif not isinstance(f, Promise):
-                    raise RuntimeError(f"{f} needs to be an Promise or coro")
+                if not isinstance(f, Promise):
+                    if hasattr(f, 'send'):
+                        f = CoroPromise(f)
+                    else:
+                        raise RuntimeError(f"{f} needs to be an Promise or coro")
 
                 def my_resolve(result=None):
                     notify_coro(True, result, resolve, reject)
@@ -125,22 +129,12 @@ class CoroPromise(Promise):
 def is_awaitable(obj):
     return hasattr(obj, 'send') or isinstance(obj, Promise)
 
-# msgpack tends to have tall stacks
-# so we use the scheduler to give it as much room as possible
-def msgpack_loads_async(obj):
-    def async_task(resolve):
-        resolve(msgpack.loads(obj))
-    def handler(resolve, _reject):
-        micropython.schedule(async_task, resolve)
-    return Promise(handler)
-
-
-def msgpack_dump_async(obj, fp):
-    def async_task(resolve):
-        msgpack.dump(obj, fp)
-        resolve()
-    def handler(resolve, _reject):
-        micropython.schedule(async_task, resolve)
+def schedule_call(coro, *args, **kwargs):
+    """Call an async function in a shallow stack."""
+    def handler(resolve, reject):
+        def async_task(_):
+            CoroPromise(coro(*args, **kwargs)).then(resolve).catch(reject)
+        micropython.schedule(async_task, None)
     return Promise(handler)
 
 class AsyncSocket:
@@ -294,24 +288,31 @@ class URPC:
                             aes = cryptolib.aes(self.secret_key, 2, session_key)
                             aes.decrypt(ciphertext, ciphertext)
                             ciphertext = memoryview(ciphertext)[:-ciphertext[-1]]
-                            handler_name, args, kwargs = await msgpack_loads_async(ciphertext)
-                            session_key = hash(self.secret_key, session_key)
 
-                            del ciphertext
-                            gc.collect()
+                            # msgpack and our user code may want a shallow stack
+                            async def defer():
+                                nonlocal ciphertext, session_key
+                                handler_name, args, kwargs = msgpack.loads(ciphertext)
+                                session_key = hash(self.secret_key, session_key)
 
-                            success = True
-                            try:
-                                data = self.rpc_handlers[handler_name](*args, **kwargs)
-                                if is_awaitable(data):
-                                    data = await data
-                            except Exception as ex:
-                                success = False
-                                data = [type(ex).__name__, str(ex)]
+                                del ciphertext
+                                gc.collect()
 
-                            data_acc = ByteAcc()
-                            await msgpack_dump_async([success, data], data_acc)
-                            data = data_acc.data
+                                success = True
+                                try:
+                                    data = self.rpc_handlers[handler_name](*args, **kwargs)
+                                    if is_awaitable(data):
+                                        data = await data
+                                except Exception as ex:
+                                    success = False
+                                    data = [type(ex).__name__, str(ex)]
+
+                                data_acc = ByteAcc()
+                                msgpack.dump([success, data], data_acc)
+                                data = data_acc.data
+                                return data
+
+                            data = await schedule_call(defer)
 
                             padding_amt = 16 - len(data) % 16
                             data.extend(bytes([padding_amt])*padding_amt)
