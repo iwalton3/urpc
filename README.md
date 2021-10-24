@@ -6,6 +6,27 @@ This is an experimental AES-encrypted RPC API for ESP 8266.
 
 The `server` folder contains a sample ESP 8266 project. Simply set the values in `config.py` and flash.
 
+```python
+# The project automatically sets up urpc for you
+# In your main:
+
+from urpc import rpc
+
+@rpc.rpc()
+def test_func(a, b):
+    return a + b
+
+@rpc.rpc("alternate_name")
+def test_func2(a, b):
+    return a - b
+
+# You can also add a handler for HTTP get requests
+# You get one handler. It encodes the output in json. You have access to query string args.
+@rpc.http()
+def http_handler(query_string_args):
+    return ["some", {"json": True}, "values"]
+```
+
 The `client` folder contains the client, which you use like this:
 
 ```python
