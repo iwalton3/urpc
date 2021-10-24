@@ -204,6 +204,20 @@ class AsyncSocket:
             buffer = buffer[:read]
         return buffer
 
+def connect(host, port):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.connect(socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)[0][-1])
+    return AsyncSocket(s)
+
+async def simple_http_request(address, path="/"):
+    s = connect(address, 80)
+    try:
+        s.send(f"GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n".encode('ascii'))
+        result = await s.recv(1024)
+    finally:
+        s.close()
+    return bytes(result).split(b"\r\n\r\n", 1)[-1].decode('utf-8')
+
 class URPC:
     def rpc(self, name=None):
         def deco(func):

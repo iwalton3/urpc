@@ -1,4 +1,4 @@
-from urpc import rpc, Promise, delay
+from urpc import rpc, Promise, delay, simple_http_request
 
 @rpc.rpc()
 def test_func(a, b):
@@ -13,6 +13,12 @@ async def test_func2():
     def t(resolve, reject):
         reject(RuntimeError("bad news"))
     await Promise(t)
+
+@rpc.rpc("get_my_ip")
+async def get_my_ip():
+    # non-blocking
+    result = await simple_http_request("icanhazip.com")
+    return result.strip()
 
 @rpc.rpc("alternate_name")
 def test_func2(a, b):
