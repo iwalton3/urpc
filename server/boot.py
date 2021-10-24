@@ -25,5 +25,3 @@ if config.AUTOSTART_WEBREPL:
     import webrepl
     if not webrepl.listen_s:
         webrepl.start()
-
-import urpc
