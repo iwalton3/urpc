@@ -137,6 +137,12 @@ def schedule_call(coro, *args, **kwargs):
         micropython.schedule(async_task, None)
     return Promise(handler)
 
+def delay(ms):
+    timer = machine.Timer(-1) # software timer
+    def handler(resolve, reject):
+        timer.init(period=ms, mode=machine.Timer.ONE_SHOT, callback=resolve)
+    return Promise(handler)
+
 class AsyncSocket:
     def __init__(self, sock):
         self.sock = sock
@@ -343,16 +349,19 @@ class URPC:
             return CoroPromise(handler_async(s))
 
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        for i in range(5):
-            try:
-                s.bind(('', 80))
-                print("URPC bound to port 80")
-                break
-            except OSError as e:
-                print("Socket error, will retry 5 times...", str(e))
-                time.sleep(2**i)
-        s.listen(5)
-        s.setsockopt(socket.SOL_SOCKET, 20, handler)
+
+        async def try_create_server():
+            for i in range(5):
+                try:
+                    s.bind(('', 80))
+                    print("URPC bound to port 80")
+                    break
+                except OSError as e:
+                    print("Socket error, will retry 5 times...", str(e))
+                    await delay(1000*2**i)
+            s.listen(5)
+            s.setsockopt(socket.SOL_SOCKET, 20, handler)
+        CoroPromise(try_create_server())
 
         @self.rpc("_dir")
         def _dir():
