@@ -384,10 +384,12 @@ class URPC:
         if config.ENABLE_MGMT_API:
             @self.rpc("reset")
             def reset():
+                s.close()
                 machine.reset()
             
             @self.rpc("soft_reset")
             def soft_reset():
+                s.close()
                 machine.soft_reset()
             
             @self.rpc("eval")
