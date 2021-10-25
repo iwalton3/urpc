@@ -42,12 +42,12 @@ class URPC:
         data = s.recv(32)
         if len(data) != 32:
             s.close()
-            raise EOFError('Unexpected stream length')
+            raise BrokenPipeError('Unexpected stream length')
         self.r_session_key = data[:16]
         auth = data[16:]
         if auth != hash(self.secret_key, self.r_session_key):
             s.close()
-            raise ValueError('Got a bad authorization header')
+            raise BrokenPipeError('Got a bad authorization header')
         
         # Prove client
         s.send(self.session_key + hash(self.secret_key, self.session_key))
@@ -55,7 +55,7 @@ class URPC:
         # Should get an OK back
         if s.recv(2) != b'OK':
             s.close()
-            raise EOFError('Handshake failed')
+            raise BrokenPipeError('Handshake failed')
         
         self.sock = s
 
@@ -101,7 +101,7 @@ class URPC:
 
         data = self.sock.recv(18)
         if len(data) != 18:
-            raise EOFError('Unexpected stream length')
+            raise BrokenPipeError('Unexpected stream length')
 
         auth = data[:16]
         length = data[16:]
@@ -110,10 +110,10 @@ class URPC:
         ciphertext = self.sock.recv(data_len)
 
         if len(ciphertext) != data_len:
-            raise EOFError('Unexpected stream length')
+            raise BrokenPipeError('Unexpected stream length')
         
         if auth != hash(self.secret_key, self.session_key, ciphertext, length):
-            raise EOFError('Signature is invalid')
+            raise BrokenPipeError('Signature is invalid')
 
         aes = AES.new(self.secret_key, AES.MODE_CBC, self.session_key)
         ciphertext = aes.decrypt(ciphertext)
