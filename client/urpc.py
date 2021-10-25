@@ -25,6 +25,7 @@ class URPC:
         self.sock = None
         self.is_populated = False
         self.address = address
+        self.auto_reconnect = True
         
         if connect:
             self.connect()
@@ -60,8 +61,11 @@ class URPC:
         self.sock = s
 
         if not self.is_populated:
+            old_reconnect = self.auto_reconnect
+            self.auto_reconnect = False
             for method in self.call("_dir"):
                 setattr(self, method, self._create_wrapper(method))
+            self.auto_reconnect = old_reconnect
             self.is_populated = True
 
     def is_connected(self):
@@ -84,8 +88,12 @@ class URPC:
 
     def _request(self, data):
         if not self.is_connected():
-            self.connect()
+            if self.auto_reconnect:
+                self.connect()
+            else:
+                raise BrokenPipeError('Not connected')
 
+        method_name = data[0]
         data = umsgpack.dumps(data)
         padding_amt = 16 - len(data) % 16
         data += bytes([padding_amt])*padding_amt
@@ -98,6 +106,11 @@ class URPC:
         self.r_session_key = hash(self.secret_key, self.r_session_key)
 
         self.sock.send(auth + length + data)
+
+        if method_name in ['reset', 'soft_reset']:
+            self.sock.close()
+            self.sock = None
+            return True, None
 
         data = self.sock.recv(18)
         if len(data) != 18:
@@ -127,7 +140,14 @@ class URPC:
         self.sock = None
     
     def call(self, name, *args, **kwargs):
-        success, result = self._request([name, list(args), kwargs])
+        try:
+            success, result = self._request([name, list(args), kwargs])
+        except (BrokenPipeError, ConnectionResetError):
+            if self.auto_reconnect:
+                self.connect()
+                success, result = self._request([name, list(args), kwargs])
+            else:
+                raise
         if success:
             return result
         else:
