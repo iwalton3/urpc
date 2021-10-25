@@ -14,8 +14,6 @@ import machine
 import config
 import micropython
 
-session_life = 600 # 10 minutes
-
 def hash(*args):
     h = hashlib.sha256()
     for arg in args:
@@ -129,13 +127,19 @@ class CoroPromise(Promise):
 def is_awaitable(obj):
     return hasattr(obj, 'send') or isinstance(obj, Promise)
 
-def schedule_call(coro, *args, **kwargs):
-    """Call an async function in a shallow stack."""
-    def handler(resolve, reject):
-        def async_task(_):
-            CoroPromise(coro(*args, **kwargs)).then(resolve).catch(reject)
-        micropython.schedule(async_task, None)
-    return Promise(handler)
+def sched_wrap(coro):
+    def wrapper(*args, **kwargs):
+        def handler(resolve, reject):
+            def async_task(_):
+                CoroPromise(coro(*args, **kwargs)).then(resolve).catch(reject)
+            micropython.schedule(async_task, None)
+        return Promise(handler)
+    return wrapper
+
+def promisify(coro):
+    def wrapper(*args, **kwargs):
+        return CoroPromise(coro(*args, **kwargs))
+    return wrapper
 
 def delay(ms):
     timer = machine.Timer(-1) # software timer
@@ -204,6 +208,127 @@ class AsyncSocket:
             buffer = buffer[:read]
         return buffer
 
+class CryptoMsgSocket:
+    def __init__(self, sock, key, session_life=600):
+        self.secret_key = key
+        self.session_life = session_life
+        self.session_exp = None
+        self.session_key = os.urandom(16)
+        self.r_session_key = None
+        self.on_msg = None
+        self.on_err = None
+        self.on_eof = None
+        self.sock = sock
+
+    def close(self):
+        self.on_err = None
+        if self.on_eof is not None:
+            self.on_eof()
+            self.on_eof = None
+        self.sock.close()
+
+    def _close_err(self, reason):
+        if self.on_err is not None:
+            self.on_err(reason)
+            self.on_err = None
+
+    async def _recv_sesskey(self):
+        keys = await self.sock.recv(32)
+        if len(keys) != 32:
+            self.close()
+            raise BrokenPipeError('Unexpected stream length')
+        self.r_session_key = keys[:16]
+        auth = keys[16:]
+        if auth != hash(self.secret_key, self.r_session_key):
+            self.close()
+            raise BrokenPipeError('Authentication failed')
+
+    async def _send_sesskey(self):
+        self.session_exp = time.time() + self.session_life
+
+        self.sock.send(self.session_key)
+        self.sock.send(hash(self.secret_key, self.session_key))
+
+    @promisify
+    async def _recv_loop(self):
+        try:
+            while True:
+                header = await self.sock.recv(18)
+                if len(header) != 18:
+                    if len(header) != 0:
+                        self._close_err("header short read")
+                    return
+
+                length = header[16:]
+                ciphertext, ok = await read_blocks(self.sock, (length[0] << 8) + length[1])
+                if not ok:
+                    self._close_err("message short read")
+                    return
+
+                if time.time() < self.session_exp:
+                    self.session_exp = time.time() + self.session_life
+                else:
+                    self._close_err("session life expired")
+                    return
+                
+                if header[:16] != hash(self.secret_key, self.session_key, ciphertext, length):
+                    self._close_err("invalid authentication header")
+                    return
+
+                aes = cryptolib.aes(self.secret_key, 2, self.session_key)
+                aes.decrypt(ciphertext, ciphertext)
+                micropython.schedule(self.on_msg, memoryview(ciphertext)[:-ciphertext[-1]])
+                self.session_key = hash(self.secret_key, self.session_key)
+        finally:
+            self.close()
+
+    def send(self, data):
+        padding_amt = 16 - len(data) % 16
+        data.extend(bytes([padding_amt])*padding_amt)
+
+        aes = cryptolib.aes(self.secret_key, 2, self.r_session_key)
+        aes.encrypt(data, data)
+
+        length = len(data)//16
+        length = bytes([length>>8, length&0xFF])
+        auth = hash(self.secret_key, self.r_session_key, data, length)
+        self.r_session_key = hash(self.secret_key, self.r_session_key)
+
+        self.sock.send(auth + length)
+        self.sock.send(data)
+
+    def set_on_msg(self, on_msg):
+        self.on_msg = on_msg
+
+    def set_on_err(self, on_err):
+        self.on_err = on_err
+    
+    def set_on_eof(self, on_eof):
+        self.on_eof = on_eof
+
+    async def start(self, is_client=False, socket_inited=True):
+        if self.on_msg is None:
+            raise RuntimeError('on_msg is required to be set')
+        if is_client:
+            self.sock.send(b'CRS')
+            await self._recv_sesskey()
+            await self._send_sesskey()
+            ack = await self.sock.recv(2)
+            if ack != b'OK':
+                self.close()
+                raise BrokenPipeError('No OK')
+        else:
+            if not socket_inited:
+                magic = await self.sock.recv(3)
+                if magic != b'CRS':
+                    self.close()
+                    raise BrokenPipeError('Bad protocol')
+            await self._send_sesskey()
+            await self._recv_sesskey()
+            self.sock.send(b'OK')
+        self._recv_loop()
+
+
 def connect(host, port):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect(socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)[0][-1])
@@ -242,6 +367,7 @@ class URPC:
         self.secret_key = secret_key
 
         async def handler_async(s):
+            should_close = True
             try:
                 conn, _ = s.accept()
                 conn = AsyncSocket(conn)
@@ -269,91 +395,31 @@ class URPC:
                         conn.send('Content-Type: text/html\n')
                         conn.send('Connection: close\n\n')
                         conn.sendall(response)
-                    elif request == b'RPC':
-                        session_key = os.urandom(16)
-                        session_exp = time.time() + session_life
+                    elif request == b'CRS':
+                        conn = CryptoMsgSocket(conn, self.secret_key)
+                        @sched_wrap
+                        async def on_msg(msg):
+                            identifier, handler_name, args, kwargs = msgpack.loads(msg)
 
-                        conn.send(session_key)
-                        conn.send(hash(self.secret_key, session_key))
-                        r_session_key = await conn.recv(16)
-                        if len(r_session_key) != 16:
-                            return
-                        auth = await conn.recv(16)
-                        if len(auth) != 16:
-                            return
-                        if auth != hash(self.secret_key, r_session_key):
-                            return
+                            success = True
+                            try:
+                                data = self.rpc_handlers[handler_name](*args, **kwargs)
+                                if is_awaitable(data):
+                                    data = await data
+                            except Exception as ex:
+                                success = False
+                                data = [type(ex).__name__, str(ex)]
+
+                            data_acc = ByteAcc()
+                            msgpack.dump([identifier, success, data], data_acc)
+                            conn.send(data_acc.data)
                         
-                        conn.send(b'OK')
-
-                        while True:
-                            auth = await conn.recv(16)
-                            if len(auth) != 16:
-                                return
-                            
-                            length = await conn.recv(2)
-                            if len(length) != 2:
-                                return
-                            ciphertext, ok = await read_blocks(conn, (length[0] << 8) + length[1])
-                            if not ok:
-                                return
-                            if time.time() < session_exp:
-                                session_exp = time.time() + session_life
-                            else:
-                                return
-                            
-                            if auth != hash(self.secret_key, session_key, ciphertext, length):
-                                return
-
-                            aes = cryptolib.aes(self.secret_key, 2, session_key)
-                            aes.decrypt(ciphertext, ciphertext)
-                            ciphertext = memoryview(ciphertext)[:-ciphertext[-1]]
-
-                            # msgpack and our user code may want a shallow stack
-                            async def defer():
-                                nonlocal ciphertext, session_key
-                                handler_name, args, kwargs = msgpack.loads(ciphertext)
-                                session_key = hash(self.secret_key, session_key)
-
-                                del ciphertext
-                                gc.collect()
-
-                                success = True
-                                try:
-                                    data = self.rpc_handlers[handler_name](*args, **kwargs)
-                                    if is_awaitable(data):
-                                        data = await data
-                                except Exception as ex:
-                                    success = False
-                                    data = [type(ex).__name__, str(ex)]
-
-                                data_acc = ByteAcc()
-                                msgpack.dump([success, data], data_acc)
-                                data = data_acc.data
-                                return data
-
-                            data = await schedule_call(defer)
-
-                            padding_amt = 16 - len(data) % 16
-                            data.extend(bytes([padding_amt])*padding_amt)
-
-                            aes = cryptolib.aes(self.secret_key, 2, r_session_key)
-                            aes.encrypt(data, data)
-
-                            length = len(data)//16
-                            length = bytes([length>>8, length&0xFF])
-                            auth = hash(self.secret_key, r_session_key, data, length)
-                            r_session_key = hash(self.secret_key, r_session_key)
-
-                            conn.send(auth)
-                            conn.send(length)
-                            conn.send(data)
-
-                            del data
-                            del auth
-                            gc.collect()
+                        conn.set_on_msg(on_msg)
+                        await conn.start()
+                        should_close = False
                 finally:
-                    conn.close()
+                    if should_close:
+                        conn.close()
             except Exception as ex:
                 print("Unexpected Error:", str(ex))
                 import sys
