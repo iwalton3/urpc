@@ -32,27 +32,25 @@ class URPC:
     def connect(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((self.address, 80))
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.session_key = os.urandom(16)
 
         # Start handshake
         s.send(b'RPC')
 
         # Validate server
-        self.r_session_key = s.recv(16)
-        if len(self.r_session_key) != 16:
+        data = s.recv(32)
+        if len(data) != 32:
             s.close()
             raise EOFError('Unexpected stream length')
-        auth = s.recv(16)
-        if len(auth) != 16:
-            s.close()
-            raise EOFError('Unexpected stream length')
+        self.r_session_key = data[:16]
+        auth = data[16:]
         if auth != hash(self.secret_key, self.r_session_key):
             s.close()
             raise ValueError('Got a bad authorization header')
         
         # Prove client
-        s.send(self.session_key)
-        s.send(hash(self.secret_key, self.session_key))
+        s.send(self.session_key + hash(self.secret_key, self.session_key))
 
         # Should get an OK back
         if s.recv(2) != b'OK':
@@ -99,17 +97,14 @@ class URPC:
         auth = hash(self.secret_key, self.r_session_key, data, length)
         self.r_session_key = hash(self.secret_key, self.r_session_key)
 
-        self.sock.send(auth)
-        self.sock.send(length)
-        self.sock.send(data)
+        self.sock.send(auth + length + data)
 
-        auth = self.sock.recv(16)
-        if len(auth) != 16:
+        data = self.sock.recv(18)
+        if len(data) != 18:
             raise EOFError('Unexpected stream length')
-        
-        length = self.sock.recv(2)
-        if len(length) != 2:
-            raise EOFError('Unexpected stream length')
+
+        auth = data[:16]
+        length = data[16:]
         block_ct = (length[0] << 8) + length[1]
         data_len = block_ct*16
         ciphertext = self.sock.recv(data_len)
