@@ -37,7 +37,7 @@ class URPC:
         self.session_key = os.urandom(16)
 
         # Start handshake
-        s.send(b'RPC')
+        s.send(b'CRS')
 
         # Validate server
         data = s.recv(32)
@@ -94,6 +94,7 @@ class URPC:
                 raise BrokenPipeError('Not connected')
 
         method_name = data[0]
+        data = [1] + data
         data = umsgpack.dumps(data)
         padding_amt = 16 - len(data) % 16
         data += bytes([padding_amt])*padding_amt
@@ -133,7 +134,7 @@ class URPC:
         ciphertext = ciphertext[:-ciphertext[-1]]
         self.session_key = hash(self.secret_key, self.session_key)
 
-        return umsgpack.loads(ciphertext)
+        return umsgpack.loads(ciphertext)[1:]
         
     def disconnect(self):
         self.sock.close()
