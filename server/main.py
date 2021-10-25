@@ -24,6 +24,12 @@ async def get_my_ip():
 def test_func2(a, b):
     return a - b
 
+@rpc.rpc(pass_util=True)
+def print_on_eof(util, to_print):
+    def callback():
+        print(to_print)
+    util.on_eof(callback)
+
 # You can also add a handler for HTTP get requests
 # You get one handler. It encodes the output in json. You have access to query string args.
 @rpc.http()

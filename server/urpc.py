@@ -343,14 +343,59 @@ async def simple_http_request(address, path="/"):
         s.close()
     return bytes(result).split(b"\r\n\r\n", 1)[-1].decode('utf-8')
 
+class URPCUtil:
+    def __init__(self, conn):
+        self._callbacks = {}
+        self._callback_id_ctr = -1
+        self._conn = conn
+        self._eof_handlers = []
+        self._err_handlers = []
+    
+    def _exec_callback(self, callback_id, data):
+        self._callbacks[callback_id](data)
+
+    def send(self, ident, data):
+        if ident <= 0:
+            raise ValueError("id must be negative")
+
+        data_acc = ByteAcc()
+        msgpack.dump([ident, data], data_acc)
+        self._conn.send(data_acc.data)
+    
+    def create_callback(self, callback):
+        ident = self._callback_id_ctr
+        self._callbacks[ident] = callback
+        self._callback_id_ctr -= 1
+        return ident
+    
+    def _on_eof(self):
+        for handler in self._eof_handlers:
+            try:
+                handler()
+            except:
+                pass
+    
+    def _on_err(self, reason):
+        for handler in self._err_handlers:
+            try:
+                handler(reason)
+            except:
+                pass
+    
+    def on_eof(self, callback):
+        self._eof_handlers.append(callback)
+    
+    def on_err(self, callback):
+        self._err_handlers.append(callback)
+
 class URPC:
-    def rpc(self, name=None):
+    def rpc(self, name=None, pass_util=False):
         def deco(func):
             nonlocal name
             if name is None:
                 # This is dirty but works
                 name = str(func).split(' ')[1]
-            self.rpc_handlers[name] = func
+            self.rpc_handlers[name] = pass_util, func
             return func
         return deco
     
@@ -397,13 +442,28 @@ class URPC:
                         conn.sendall(response)
                     elif request == b'CRS':
                         conn = CryptoMsgSocket(conn, self.secret_key)
+                        util = URPCUtil(conn)
+
                         @sched_wrap
                         async def on_msg(msg):
-                            identifier, handler_name, args, kwargs = msgpack.loads(msg)
+                            data = msgpack.loads(msg)
+
+                            if data[0] < 0:
+                                try:
+                                    util._exec_callback(*data)
+                                except:
+                                    pass
+                                return
+                            
+                            identifier, handler_name, args, kwargs = data
 
                             success = True
                             try:
-                                data = self.rpc_handlers[handler_name](*args, **kwargs)
+                                pass_util, func = self.rpc_handlers[handler_name]
+                                if pass_util:
+                                    data = func(util, *args, **kwargs)
+                                else:
+                                    data = func(*args, **kwargs)
                                 if is_awaitable(data):
                                     data = await data
                             except Exception as ex:
@@ -415,6 +475,8 @@ class URPC:
                             conn.send(data_acc.data)
                         
                         conn.set_on_msg(on_msg)
+                        conn.set_on_eof(util._on_eof)
+                        conn.set_on_err(util._on_err)
                         await conn.start()
                         should_close = False
                 finally:
