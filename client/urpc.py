@@ -1,7 +1,7 @@
 import socket
 import select
 import hashlib
-import msgpack
+import umsgpack
 import os
 from Crypto.Cipher import AES
 
@@ -86,7 +86,7 @@ class URPC:
         if not self.is_connected():
             self.connect()
 
-        data = msgpack.dumps(data)
+        data = umsgpack.dumps(data)
         padding_amt = 16 - len(data) % 16
         data += bytes([padding_amt])*padding_amt
         aes = AES.new(self.secret_key, AES.MODE_CBC, self.r_session_key)
@@ -120,7 +120,7 @@ class URPC:
         ciphertext = ciphertext[:-ciphertext[-1]]
         self.session_key = hash(self.secret_key, self.session_key)
 
-        return msgpack.loads(ciphertext)
+        return umsgpack.loads(ciphertext)
         
     def disconnect(self):
         self.sock.close()
