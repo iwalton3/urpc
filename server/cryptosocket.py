@@ -90,10 +90,10 @@ class CryptoMsgSocket:
         self.sock.send(auth + length)
         self.sock.send(data)
 
-    async def start(self, is_client=False):
+    async def start(self, recv_first=False):
         if self.on_msg is None:
             raise RuntimeError('on_msg is required to be set')
-        if is_client:
+        if recv_first:
             await self._recv_sesskey()
             await self._send_sesskey()
             ack = await self.sock.recv(2)
