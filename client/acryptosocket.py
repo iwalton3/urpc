@@ -18,6 +18,8 @@ class CryptoMsgSocket:
         self.on_err = None
         self.on_eof = None
         self.r, self.w = sock
+        self.closed = False
+        self.t = None
 
     async def start(self, recv_first=False):
         if self.on_msg is None:
@@ -34,7 +36,7 @@ class CryptoMsgSocket:
             await self._recv_sesskey()
             self.w.write(b'OK')
             await self.w.drain()
-        asyncio.create_task(self._recv_loop())
+        self.t = asyncio.create_task(self._recv_loop())
 
     async def _recv_sesskey(self):
         keys = await self.r.read(32)
@@ -88,21 +90,33 @@ class CryptoMsgSocket:
                 ciphertext = aes.decrypt(ciphertext)
                 self.session_key = hash(self.secret_key, self.session_key)
                 self.on_msg(ciphertext[:-ciphertext[-1]])
+        except GeneratorExit:
+            self._close()
         except BrokenPipeError as ex:
             self._close_err(ex)
         finally:
-            await self.close()
+            if not self.closed:
+                await self.close()
+
+    def __del__(self):
+        self._close()
 
     def _close_err(self, reason):
         if self.on_err is not None:
             self.on_err(reason)
             self.on_err = None
 
-    async def close(self):
+    def _close(self):
+        if self.closed:
+            return
         self.on_err = None
         if self.on_eof is not None:
             self.on_eof()
             self.on_eof = None
         self.w.close()
+        self.closed = True
+
+    async def close(self):
+        self._close()
         await self.w.wait_closed()
 

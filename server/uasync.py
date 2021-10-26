@@ -53,15 +53,18 @@ class Promise():
                 reject_callbacks = self._reject_callbacks
                 self._reject_callbacks = []
                 for reject in reject_callbacks:
-                    #reject(self.exception)
-                    # this prevents stack overflows
-                    micropython.schedule(reject, self.exception)
+                    try:
+                        micropython.schedule(reject, self.exception)
+                    except RuntimeError:
+                        reject(self.exception)
             else:
                 resolve_callbacks = self._resolve_callbacks
                 self._resolve_callbacks = []
                 for resolve in resolve_callbacks:
-                    # resolve(self.result)
-                    micropython.schedule(resolve, self.result)
+                    try:
+                        micropython.schedule(resolve, self.result)
+                    except RuntimeError:
+                        resolve(self.result)
 
 class CoroPromise(Promise):
     def __init__(self, coro):

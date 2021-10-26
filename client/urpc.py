@@ -56,8 +56,9 @@ class URPC:
         return json.loads(self.sock.recv())[1:]
 
     def disconnect(self):
-        self.sock.close()
-        self.sock = None
+        if self.sock:
+            self.sock.close()
+            self.sock = None
     
     def call(self, name, *args, **kwargs):
         try:

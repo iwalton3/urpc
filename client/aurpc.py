@@ -66,6 +66,8 @@ class URPC:
         
         f = asyncio.Future()
         def callback(success, data):
+            if f.cancelled():
+                return
             if success:
                 f.set_result(data)
             else:
@@ -76,8 +78,10 @@ class URPC:
         return await f
 
     async def disconnect(self):
-        await self.sock.close()
-        self.sock = None
+        if self.sock:
+            sock = self.sock
+            self.sock = None
+            await sock.close()
     
     async def call(self, name, *args, **kwargs):
         success, result = await self._request([name, list(args), kwargs])

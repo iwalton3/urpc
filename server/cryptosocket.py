@@ -1,7 +1,6 @@
 import hashlib
 import os
 import cryptolib
-import micropython
 from uasync import CoroPromise
 
 def hash(*args):
@@ -70,7 +69,11 @@ class CryptoMsgSocket:
 
                 aes = cryptolib.aes(self.secret_key, 2, self.session_key)
                 aes.decrypt(ciphertext, ciphertext)
-                micropython.schedule(self.on_msg, memoryview(ciphertext)[:-ciphertext[-1]])
+                try:
+                    self.on_msg(memoryview(ciphertext)[:-ciphertext[-1]])
+                except Exception as ex:
+                    import sys
+                    sys.print_exception(ex)
                 self.session_key = hash(self.secret_key, self.session_key)
         finally:
             self.close()

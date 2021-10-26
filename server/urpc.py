@@ -48,7 +48,6 @@ class URPC:
                 conn.on_msg = on_msg
                 await conn.start()
             except Exception as ex:
-                print("Unexpected Error:", str(ex))
                 import sys
                 sys.print_exception(ex)
 
