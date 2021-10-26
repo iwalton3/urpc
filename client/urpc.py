@@ -34,7 +34,7 @@ class URPC:
         
         self.sock = CryptoMsgSocket(s, self.secret_key, True)
 
-        if not self.is_populated:
+        if self.should_populate:
             self.populate()
             self.should_populate = False
 

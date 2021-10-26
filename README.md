@@ -4,7 +4,7 @@ This is an experimental AES-encrypted RPC API for ESP 8266.
 
 ## Usage
 
-The `server` folder contains a sample ESP 8266 project. Simply set the values in `config.py` and flash.
+The `server` folder contains a sample ESP 8266 project. Simply set the values in `config.py` and flash. There are async primatives that are custom to this project that you can use. See the `main.py` for examples.
 
 ```python
 # The project automatically sets up urpc for you
@@ -19,14 +19,7 @@ def test_func(a, b):
 @rpc.rpc("alternate_name")
 def test_func2(a, b):
     return a - b
-
-# You can also add a handler for HTTP get requests
-# You get one handler. It encodes the output in json. You have access to query string args.
-@rpc.http()
-def http_handler(query_string_args):
-    return ["some", {"json": True}, "values"]
 ```
-I also include some administrative functions, if you prefer not to use the REPL, which is unencrypted and limited to an 8 character password: `reset()`, `soft_reset()`, `eval(code)`, `ls()`, `rm(filename)`, `put(filename, b'data')`, `get(filename)`, `start_webrepl(password)`, `stop_webrepl()`. Note that these do not buffer the inputs/outputs.
 
 The `client` folder contains the client, which you use like this:
 
@@ -42,6 +35,3 @@ rpc.disconnect()
 ```
 
 You need https://pypi.org/project/pycrypto/ for the `client`.
-
-Uses umsgpack from: https://github.com/peterhinch/micropython-msgpack 
-I have bundled umsgpack into one file and made some tweaks for easier use in this project.

@@ -23,7 +23,11 @@ async def get_my_ip():
     return result.strip()
 
 # stack limitation:
-# test() returns 13 and test2()'s delegate returns 20
+# test() returns 9 and test2()'s delegate returns 20
+
+# Note that you can only have a few micropython.schedule calls
+# in flight at any given time. Hence why I don't auto-wrap functions
+# with it amymore.
 @rpc.rpc()
 def test():
     try:
