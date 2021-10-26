@@ -10,15 +10,22 @@ class URPCError(Exception):
         return str(self.error_name) + ": " + str(self.message)
 
 class URPC:
-    def __init__(self, address, secret_key, connect=True):
+    def __init__(self, address, secret_key, connect=True, autopopulate=True):
         self.secret_key = secret_key
         self.sock = None
-        self.is_populated = False
+        self.should_populate = autopopulate
         self.address = address
         self.auto_reconnect = True
         
         if connect:
             self.connect()
+
+    def populate(self):
+        old_reconnect = self.auto_reconnect
+        self.auto_reconnect = False
+        for method in self.call("_dir"):
+            setattr(self, method, self._create_wrapper(method))
+        self.auto_reconnect = old_reconnect
 
     def connect(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -28,12 +35,8 @@ class URPC:
         self.sock = CryptoMsgSocket(s, self.secret_key, True)
 
         if not self.is_populated:
-            old_reconnect = self.auto_reconnect
-            self.auto_reconnect = False
-            for method in self.call("_dir"):
-                setattr(self, method, self._create_wrapper(method))
-            self.auto_reconnect = old_reconnect
-            self.is_populated = True
+            self.populate()
+            self.should_populate = False
 
     def _create_wrapper(self, method):
         def wrapper(*args, **kwargs):
