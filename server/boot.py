@@ -20,10 +20,5 @@ def do_connect():
 do_connect()
 gc.collect()
 
-# Start if not already started
-if config.AUTOSTART_WEBREPL:
-    import webrepl
-    if not webrepl.listen_s:
-        webrepl.start()
-
-import urpc
+import webrepl
+webrepl.start()

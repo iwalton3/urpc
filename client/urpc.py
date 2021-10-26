@@ -1,7 +1,7 @@
 import socket
 import select
 import hashlib
-import umsgpack
+import json
 import os
 from Crypto.Cipher import AES
 
@@ -35,9 +35,6 @@ class URPC:
         s.connect((self.address, 80))
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.session_key = os.urandom(16)
-
-        # Start handshake
-        s.send(b'CRS')
 
         # Validate server
         data = s.recv(32)
@@ -93,9 +90,8 @@ class URPC:
             else:
                 raise BrokenPipeError('Not connected')
 
-        method_name = data[0]
         data = [1] + data
-        data = umsgpack.dumps(data)
+        data = json.dumps(data).encode('ascii')
         padding_amt = 16 - len(data) % 16
         data += bytes([padding_amt])*padding_amt
         aes = AES.new(self.secret_key, AES.MODE_CBC, self.r_session_key)
@@ -107,11 +103,6 @@ class URPC:
         self.r_session_key = hash(self.secret_key, self.r_session_key)
 
         self.sock.send(auth + length + data)
-
-        if method_name in ['reset', 'soft_reset']:
-            self.sock.close()
-            self.sock = None
-            return True, None
 
         data = self.sock.recv(18)
         if len(data) != 18:
@@ -134,7 +125,7 @@ class URPC:
         ciphertext = ciphertext[:-ciphertext[-1]]
         self.session_key = hash(self.secret_key, self.session_key)
 
-        return umsgpack.loads(ciphertext)[1:]
+        return json.loads(ciphertext)[1:]
         
     def disconnect(self):
         self.sock.close()

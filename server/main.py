@@ -1,4 +1,6 @@
-from urpc import rpc, Promise, delay, simple_http_request
+from uasync import Promise, delay
+from asocket import simple_http_request
+from urpc import rpc
 
 @rpc.rpc()
 def test_func(a, b):
@@ -20,18 +22,35 @@ async def get_my_ip():
     result = await simple_http_request("icanhazip.com")
     return result.strip()
 
-@rpc.rpc("alternate_name")
-def test_func2(a, b):
-    return a - b
+# stack limitation:
+# test() returns 13 and test2()'s delegate returns 20
+@rpc.rpc()
+def test():
+    try:
+        return test() + 1
+    except:
+        return 0
 
-@rpc.rpc(pass_util=True)
-def print_on_eof(util, to_print):
-    def callback():
-        print(to_print)
-    util.on_eof(callback)
+@rpc.rpc("test2")
+def test2():
+    def delegate(resolve):
+        resolve(test())
+    def call_delegate(resolve, reject):
+        import micropython
+        micropython.schedule(delegate, resolve)
+    return Promise(call_delegate)
 
-# You can also add a handler for HTTP get requests
-# You get one handler. It encodes the output in json. You have access to query string args.
-@rpc.http()
-def http_handler(query_string_args):
-    return ["some", {"json": True}, "values"]
+# I get 21250 from a raw repl
+# Between 15750 and 20500 with an rpc session
+@rpc.rpc("test3")
+def test3():
+    import gc
+    i=0
+    while True:
+        try:
+            a = bytes(i+250)
+            del a
+            gc.collect()
+            i += 250
+        except:
+            return i
